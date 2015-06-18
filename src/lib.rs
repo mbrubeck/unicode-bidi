@@ -57,6 +57,8 @@ pub mod tables;
 pub use tables::{BidiClass, bidi_class, UNICODE_VERSION};
 use BidiClass::*;
 
+pub use prepare::level_runs;
+
 use std::borrow::Cow;
 use std::cmp::{max, min};
 use std::iter::repeat;
@@ -562,7 +564,7 @@ mod prepare {
     /// Finds the level runs in a paragraph.
     ///
     /// http://www.unicode.org/reports/tr9/#BD7
-    fn level_runs(levels: &[u8], classes: &[BidiClass]) -> Vec<LevelRun> {
+    pub fn level_runs(levels: &[u8], classes: &[BidiClass]) -> Vec<LevelRun> {
         assert!(levels.len() == classes.len());
 
         let mut runs = Vec::new();
