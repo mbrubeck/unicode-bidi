@@ -91,8 +91,10 @@ pub struct ParagraphInfo {
 pub fn process_paragraph(text: &str, level: Option<u8>) -> ParagraphInfo {
     let InitialProperties { para_level, initial_classes } = initial_scan(text, level);
 
-    let explicit::Result { mut classes, mut levels } =
-        explicit::compute(text, para_level, &initial_classes);
+    let mut levels = vec![para_level; text.len()];
+    let mut classes = initial_classes.clone();
+
+    explicit::compute(text, para_level, &initial_classes, &mut levels, &mut classes);
 
     let sequences = prepare::isolating_run_sequences(para_level, &initial_classes, &levels);
     for sequence in &sequences {
@@ -101,6 +103,40 @@ pub fn process_paragraph(text: &str, level: Option<u8>) -> ParagraphInfo {
     }
     let max_level = implicit::resolve_levels(&classes, &mut levels);
     assign_levels_to_removed_chars(para_level, &initial_classes, &mut levels);
+
+    ParagraphInfo {
+        levels: levels,
+        classes: initial_classes,
+        para_level: para_level,
+        max_level: max_level,
+    }
+}
+
+pub fn process_paragraphs(text: &str, level: Option<u8>, paragraphs: &[Range<usize>])
+    -> ParagraphInfo
+{
+    let InitialProperties { para_level, initial_classes } = initial_scan(text, level);
+
+    let mut levels = vec![para_level; text.len()];
+    let mut classes = initial_classes.clone();
+    let mut max_level = para_level;
+
+    for range in paragraphs {
+        let text = &text[range.clone()];
+        let levels = &mut levels[range.clone()];
+        let classes = &mut classes[range.clone()];
+        let initial_classes = &initial_classes[range.clone()];
+
+        explicit::compute(text, para_level, &initial_classes, levels, classes);
+
+        let sequences = prepare::isolating_run_sequences(para_level, &initial_classes, levels);
+        for sequence in &sequences {
+            implicit::resolve_weak(sequence, classes);
+            implicit::resolve_neutral(sequence, levels, classes);
+        }
+        max_level = max(max_level, implicit::resolve_levels(&classes, levels));
+        assign_levels_to_removed_chars(para_level, &initial_classes, levels);
+    }
 
     ParagraphInfo {
         levels: levels,
@@ -317,23 +353,13 @@ mod explicit {
     use super::{BidiClass, is_rtl};
     use super::BidiClass::*;
 
-    /// Output of the explicit levels algorithm.
-    pub struct Result {
-        pub levels: Vec<u8>,
-        pub classes: Vec<BidiClass>,
-    }
-
     /// Compute explicit embedding levels for one paragraph of text (X1-X8).
     ///
     /// `classes[i]` must contain the BidiClass of the char at byte index `i`,
     /// for each char in `text`.
-    pub fn compute(text: &str, para_level: u8, classes: &[BidiClass]) -> Result {
-        assert!(text.len() == classes.len());
-
-        let mut result = Result {
-            levels: vec![para_level; text.len()],
-            classes: Vec::from(classes),
-        };
+    pub fn compute(text: &str, para_level: u8, initial_classes: &[BidiClass],
+                   levels: &mut [u8], classes: &mut [BidiClass]) {
+        assert!(text.len() == initial_classes.len());
 
         // http://www.unicode.org/reports/tr9/#X1
         let mut stack = DirectionalStatusStack::new();
@@ -344,10 +370,10 @@ mod explicit {
         let mut valid_isolate_count = 0u32;
 
         for (i, c) in text.char_indices() {
-            match classes[i] {
+            match initial_classes[i] {
                 // Rules X2-X5c
                 RLE | LRE | RLO | LRO | RLI | LRI | FSI => {
-                    let is_rtl = match classes[i] {
+                    let is_rtl = match initial_classes[i] {
                         RLE | RLO | RLI => true,
                         _ => false
                     };
@@ -359,18 +385,18 @@ mod explicit {
                     };
 
                     // X5a-X5c: Isolate initiators get the level of the last entry on the stack.
-                    let is_isolate = matches!(classes[i], RLI | LRI | FSI);
+                    let is_isolate = matches!(initial_classes[i], RLI | LRI | FSI);
                     if is_isolate {
-                        result.levels[i] = last_level;
+                        levels[i] = last_level;
                         match stack.last().status {
-                            OverrideStatus::RTL => result.classes[i] = R,
-                            OverrideStatus::LTR => result.classes[i] = L,
+                            OverrideStatus::RTL => classes[i] = R,
+                            OverrideStatus::LTR => classes[i] = L,
                             _ => {}
                         }
                     }
 
                     if valid(new_level) && overflow_isolate_count == 0 && overflow_embedding_count == 0 {
-                        stack.push(new_level, match classes[i] {
+                        stack.push(new_level, match initial_classes[i] {
                             RLO => OverrideStatus::RTL,
                             LRO => OverrideStatus::LTR,
                             RLI | LRI | FSI => OverrideStatus::Isolate,
@@ -381,7 +407,7 @@ mod explicit {
                         } else {
                             // The spec doesn't explicitly mention this step, but it is necessary.
                             // See the reference implementations for comparison.
-                            result.levels[i] = new_level;
+                            levels[i] = new_level;
                         }
                     } else if is_isolate {
                         overflow_isolate_count += 1;
@@ -406,10 +432,10 @@ mod explicit {
                         valid_isolate_count -= 1;
                     }
                     let last = stack.last();
-                    result.levels[i] = last.level;
+                    levels[i] = last.level;
                     match last.status {
-                        OverrideStatus::RTL => result.classes[i] = R,
-                        OverrideStatus::LTR => result.classes[i] = L,
+                        OverrideStatus::RTL => classes[i] = R,
+                        OverrideStatus::LTR => classes[i] = L,
                         _ => {}
                     }
                 }
@@ -427,28 +453,26 @@ mod explicit {
                     }
                     // The spec doesn't explicitly mention this step, but it is necessary.
                     // See the reference implementations for comparison.
-                    result.levels[i] = stack.last().level;
+                    levels[i] = stack.last().level;
                 }
                 // http://www.unicode.org/reports/tr9/#X6
                 B | BN => {}
                 _ => {
                     let last = stack.last();
-                    result.levels[i] = last.level;
+                    levels[i] = last.level;
                     match last.status {
-                        OverrideStatus::RTL => result.classes[i] = R,
-                        OverrideStatus::LTR => result.classes[i] = L,
+                        OverrideStatus::RTL => classes[i] = R,
+                        OverrideStatus::LTR => classes[i] = L,
                         _ => {}
                     }
                 }
             }
             // Handle multi-byte characters.
             for j in 1..c.len_utf8() {
-                result.levels[i+j] = result.levels[i];
-                // TODO: Only do this if result.classes changed?
-                result.classes[i+j] = result.classes[i];
+                levels[i+j] = levels[i];
+                classes[i+j] = classes[i];
             }
         }
-        result
     }
 
     /// Maximum depth of the directional status stack.
