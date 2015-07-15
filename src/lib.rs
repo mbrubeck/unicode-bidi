@@ -135,7 +135,7 @@ fn class_for_level(level: u8) -> BidiClass {
 pub fn reorder_line<'a>(paragraph: &'a str, line: Range<usize>, info: &ParagraphInfo)
     -> Cow<'a, str>
 {
-    let runs = visual_runs(line.clone(), info.para_level, info.max_level, &info.levels);
+    let runs = visual_runs(line.clone(), &info);
     if runs.len() == 1 && !is_rtl(info.levels[runs[0].start]) {
         return paragraph.into()
     }
@@ -160,21 +160,39 @@ pub type LevelRun = Range<usize>;
 /// `line` is a range of bytes indices within `paragraph`.
 ///
 /// http://www.unicode.org/reports/tr9/#Reordering_Resolved_Levels
-pub fn visual_runs(line: Range<usize>,
-                   para_level: u8,
-                   max_level: u8,
-                   levels: &[u8]) -> Vec<LevelRun> {
-    assert!(line.start <= levels.len());
-    assert!(line.end <= levels.len());
+pub fn visual_runs(line: Range<usize>, info: &ParagraphInfo) -> Vec<LevelRun> {
+    assert!(line.start <= info.levels.len());
+    assert!(line.end <= info.levels.len());
 
-    // TODO: Whitespace handling.
     // http://www.unicode.org/reports/tr9/#L1
+    let mut levels = Cow::Borrowed(&info.levels[..]);
+    let mut at_eol_or_preceding_separator = true;
+    for i in line.clone().rev() {
+        match info.classes[i] {
+            // Reset the following characters to the paragraph embedding level:
+            // 1. Segment separators (S)
+            // 2. Paragraph separators (B)
+            S | B => {
+                levels.to_mut()[i] = info.para_level;
+                at_eol_or_preceding_separator = true;
+            }
+            // 3. Any sequence of WS and/or isolate formatting characters preceding a segment
+            //    separator or paragraph separator.
+            // 4. Any sequence of WS and/or isolate formatting characters at the end of the line.
+            WS | FSI | LRI | RLI | PDI if at_eol_or_preceding_separator => {
+                levels.to_mut()[i] = info.para_level;
+            }
+            _ => {
+                at_eol_or_preceding_separator = false;
+            }
+        }
+    }
 
-    assert!(max_level >= para_level);
-    let mut runs = Vec::with_capacity((max_level - para_level) as usize + 1);
+    assert!(info.max_level >= info.para_level);
+    let mut runs = Vec::with_capacity((info.max_level - info.para_level) as usize + 1);
 
     // Optimization: If there's only one level, just return a single run for the whole line.
-    if max_level == para_level || line.len() == 0 {
+    if info.max_level == info.para_level || line.len() == 0 {
         runs.push(line.clone());
         return runs
     }
@@ -933,5 +951,6 @@ mod test {
                            "abc\u{2067}-.\u{2069}ghi");
         assert_eq!(reorder("Hello, \u{2068}\u{202E}world\u{202C}\u{2069}!"),
                            "Hello, \u{2068}\u{202E}\u{202C}dlrow\u{2069}!");
+
     }
 }
