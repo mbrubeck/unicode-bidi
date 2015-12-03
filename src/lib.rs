@@ -55,6 +55,7 @@
 #[macro_use] extern crate matches;
 
 pub mod tables;
+pub mod brackets;
 
 pub use tables::{BidiClass, bidi_class, UNICODE_VERSION};
 use BidiClass::*;
